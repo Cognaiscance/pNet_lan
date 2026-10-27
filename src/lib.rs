@@ -7,6 +7,7 @@
 mod directory;
 mod fetch;
 mod node_api;
+mod page;
 mod push;
 mod startup;
 mod store;

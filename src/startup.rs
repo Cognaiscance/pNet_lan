@@ -3,10 +3,12 @@
 //! The client registers as `pnet-lan-client` and keeps its own token. The
 //! server registers as `pnet-lan-server`. It is the record on the rank-1
 //! server-grade node and stands by on every other node. A standby does not
-//! open a store. This step has no page and no TUN interface.
+//! open a store. The record role serves the address page. There is no TUN
+//! interface yet.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 
 use crate::directory::{choose_role, parse_get_data, record_server, role_summary, ProcessKind};
 use crate::fetch::{answer_fetch, fetch_request};
@@ -14,6 +16,7 @@ use crate::node_api::{
     decode_push, default_push_port, load_token, save_token, token_path, NodeClient,
     DEFAULT_PNET_ADDR,
 };
+use crate::page;
 use crate::push::{
     ack_message, client_targets, decode_ack, needs_push, note_confirmation, push_message,
     pushed_updated_at, RETRY,
@@ -95,7 +98,20 @@ fn run(kind: ProcessKind) -> Result<(), String> {
             list.assignments().len(),
             list.updated_at()
         );
-        serve_record(&client, &push, &token, &dir, &mut list)?;
+        let list = Arc::new(Mutex::new(list));
+        let shared_dir = Arc::new(Mutex::new(dir.clone()));
+        let http_port = page::http_port()?;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", http_port))
+            .map_err(|err| format!("bind 127.0.0.1:{http_port}: {err}"))?;
+        println!("Address page http://127.0.0.1:{http_port}/");
+        let page_list = Arc::clone(&list);
+        let page_dir = Arc::clone(&shared_dir);
+        std::thread::spawn(move || {
+            if let Err(err) = page::serve(listener, page_list, page_dir) {
+                eprintln!("address page: {err}");
+            }
+        });
+        serve_record(&client, &push, &token, &list, &shared_dir)?;
     }
     if kind == ProcessKind::Client {
         serve_client(&client, &push, &token, &dir)?;
@@ -149,27 +165,30 @@ fn serve_record(
     client: &NodeClient,
     push: &std::net::UdpSocket,
     token: &[u8; 16],
-    dir: &crate::directory::Directory,
-    list: &mut Store,
+    list: &Arc<Mutex<Store>>,
+    dir: &Arc<Mutex<crate::directory::Directory>>,
 ) -> Result<(), String> {
     push.set_read_timeout(Some(RETRY))
         .map_err(|err| format!("push socket: {err}"))?;
-    let mut current = dir.clone();
     let mut buf = [0u8; 65535];
     loop {
-        if let Ok(reply) = client.get_data(token) {
-            if let Ok(fresh) = parse_get_data(&reply) {
-                current = fresh;
-                let _ = list.note_clients_from(&current);
+        {
+            let mut list = list.lock().map_err(|_| "address list lock".to_string())?;
+            let mut current = dir.lock().map_err(|_| "directory lock".to_string())?;
+            if let Ok(reply) = client.get_data(token) {
+                if let Ok(fresh) = parse_get_data(&reply) {
+                    *current = fresh;
+                    let _ = list.note_clients_from(&current);
+                }
             }
-        }
-        let message = push_message(list.updated_at(), list.assignments());
-        for (device, app) in client_targets(&current) {
-            if !needs_push(list, &device) {
-                continue;
-            }
-            if let Err(err) = client.send(token, &device, &app, &message) {
-                eprintln!("could not push the address list: {err}");
+            let message = push_message(list.updated_at(), list.assignments());
+            for (device, app) in client_targets(&current) {
+                if !needs_push(&list, &device) {
+                    continue;
+                }
+                if let Err(err) = client.send(token, &device, &app, &message) {
+                    eprintln!("could not push the address list: {err}");
+                }
             }
         }
         let n = match push.recv(&mut buf) {
@@ -181,12 +200,14 @@ fn serve_record(
             continue;
         };
         let now = unix_ms();
+        let mut list = list.lock().map_err(|_| "address list lock".to_string())?;
+        let current = dir.lock().map_err(|_| "directory lock".to_string())?;
         if let Some(acked) = decode_ack(payload) {
-            note_confirmation(list, &current, &sender, acked, now)
+            note_confirmation(&mut list, &current, &sender, acked, now)
                 .map_err(|err| format!("confirm: {err}"))?;
             continue;
         }
-        let reply = answer_fetch(list, &current, &sender, now, payload)
+        let reply = answer_fetch(&mut list, &current, &sender, now, payload)
             .map_err(|err| format!("answer fetch: {err}"))?;
         let Some(reply) = reply else {
             continue;

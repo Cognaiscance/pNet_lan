@@ -21,7 +21,12 @@ token: `~/.pnet/pnet-lan-client/token` and `~/.pnet/pnet-lan-server/token`.
 
 The client prints `client`. The server prints `record` when this node is the
 rank-1 server-grade node, and `standby` on every other node. A standby does
-not open a store. There is no page and no TUN interface yet.
+not open a store. There is no TUN interface yet.
+
+The record role serves `http://127.0.0.1:8794/`. `PNET_LAN_HTTP_PORT` overrides
+that port. The page lists this user's devices, then each contact's devices.
+Saving an address or clearing one writes the list, bumps `updated_at`, and
+the push sends that list. A value that is not an IP address is left unsaved.
 
 The record role creates or reopens `~/.pnet/pnet-lan/list`. `PNET_LAN_DIR`
 overrides that directory. Each row is a device and an optional IPv4 or IPv6 address.
@@ -34,7 +39,7 @@ server-grade node. That server answers with the list and sets `received_at`.
 A contact's client gets no answer. A retry does not move `received_at`
 backward.
 
-When the list changes, the server pushes it to each of this user's devices
+Saving on the page changes the list. When the list changes, the server pushes it to each of this user's devices
 that has the client installed. It sends that push again every second until
 the client confirms the same `updated_at`. Confirmation sets `received_at`
 and does not move it backward. A client that is not in the directory is left
