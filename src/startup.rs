@@ -3,15 +3,15 @@
 //! The client registers as `pnet-lan-client` and keeps its own token. The
 //! server registers as `pnet-lan-server`. It is the record on the rank-1
 //! server-grade node and stands by on every other node. A standby does not
-//! open a store. The record role serves the address page. There is no TUN
-//! interface yet.
+//! open a store. The record role serves the address page. The client opens a
+//! TUN interface and does not forward packets yet.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use crate::directory::{choose_role, parse_get_data, record_server, role_summary, ProcessKind};
-use crate::fetch::{answer_fetch, fetch_request};
+use crate::fetch::{answer_fetch, decode_assignment, fetch_request};
 use crate::node_api::{
     decode_push, default_push_port, load_token, save_token, token_path, NodeClient,
     DEFAULT_PNET_ADDR,
@@ -22,6 +22,7 @@ use crate::push::{
     pushed_updated_at, RETRY,
 };
 use crate::store::{self, Store};
+use crate::tun::{self, claim_for};
 
 pub fn main_for(kind: ProcessKind) -> ExitCode {
     match run(kind) {
@@ -137,6 +138,12 @@ fn serve_client(
     token: &[u8; 16],
     dir: &crate::directory::Directory,
 ) -> Result<(), String> {
+    let interface = tun::Tun::open("pnetlan").map_err(|err| format!("open tun pnetlan: {err}"))?;
+    println!(
+        "TUN {} is open (fd {}). No packets are forwarded yet.",
+        interface.name,
+        interface.fd()
+    );
     request_list(client, token, dir);
     let mut buf = [0u8; 65535];
     loop {
@@ -147,6 +154,11 @@ fn serve_client(
         let Some((_sender, payload)) = decode_push(&buf[..n]) else {
             continue;
         };
+        if let Some((_updated_at, rows)) = decode_assignment(payload) {
+            let claim = claim_for(&dir.local_device, &rows);
+            tun::apply(&interface.name, &claim)?;
+            println!("{}", tun::describe(&claim));
+        }
         let Some(updated_at) = pushed_updated_at(payload) else {
             continue;
         };

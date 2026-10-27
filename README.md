@@ -19,7 +19,10 @@ token: `~/.pnet/pnet-lan-client/token` and `~/.pnet/pnet-lan-server/token`.
 `PNET_LAN_TOKEN_FILE` overrides that path. Both use protocol
 `application/pnet-lan`.
 
-The client prints `client`. The server prints `record` when this node is the
+The client prints `client` and opens a TUN interface named `pnetlan`. It claims
+only the address assigned to this device. The other addresses in the list are
+host routes through that interface. An empty assignment leaves the interface
+with nothing to claim. No packet is forwarded yet. The server prints `record` when this node is the
 rank-1 server-grade node, and `standby` on every other node. A standby does
 not open a store. There is no TUN interface yet.
 

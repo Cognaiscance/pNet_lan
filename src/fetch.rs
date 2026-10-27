@@ -34,7 +34,22 @@ pub(crate) fn encode_typed(kind: u8, updated_at: u64, rows: &[Assignment]) -> Ve
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn decode_list(payload: &[u8]) -> Option<(u64, Vec<Assignment>)> {
-    if payload.len() < 2 + 8 + 2 || payload[0] != VERSION || payload[1] != LIST {
+    decode_rows(payload, LIST)
+}
+
+/// A fetch reply or a push. Both carry the address list.
+pub fn decode_assignment(payload: &[u8]) -> Option<(u64, Vec<Assignment>)> {
+    if payload.get(1) == Some(&LIST) {
+        decode_rows(payload, LIST)
+    } else if payload.get(1) == Some(&0x03) {
+        decode_rows(payload, 0x03)
+    } else {
+        None
+    }
+}
+
+fn decode_rows(payload: &[u8], kind: u8) -> Option<(u64, Vec<Assignment>)> {
+    if payload.len() < 2 + 8 + 2 || payload[0] != VERSION || payload[1] != kind {
         return None;
     }
     let mut pos = 2;

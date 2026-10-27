@@ -11,6 +11,7 @@ mod page;
 mod push;
 mod startup;
 mod store;
+mod tun;
 
 pub use directory::ProcessKind;
 pub use startup::main_for;

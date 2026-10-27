@@ -323,7 +323,7 @@ pub fn choose_role(dir: &Directory, kind: ProcessKind) -> Result<Role, RoleError
 
 pub fn role_summary(role: Role) -> &'static str {
     match role {
-        Role::Client => "This client forwards packets. No interface is open yet.",
+        Role::Client => "This client holds this device's address and routes the others.",
         Role::Record => "This server holds the address list.",
         Role::Standby => "This server is standing by and will not open a store.",
     }
