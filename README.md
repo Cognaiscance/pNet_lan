@@ -33,3 +33,9 @@ On startup the client sends `FETCH` to `pnet-lan-server` on the rank-1
 server-grade node. That server answers with the list and sets `received_at`.
 A contact's client gets no answer. A retry does not move `received_at`
 backward.
+
+When the list changes, the server pushes it to each of this user's devices
+that has the client installed. It sends that push again every second until
+the client confirms the same `updated_at`. Confirmation sets `received_at`
+and does not move it backward. A client that is not in the directory is left
+for the fetch. A contact is not pushed to.

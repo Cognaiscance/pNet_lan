@@ -14,6 +14,10 @@ use crate::node_api::{
     decode_push, default_push_port, load_token, save_token, token_path, NodeClient,
     DEFAULT_PNET_ADDR,
 };
+use crate::push::{
+    ack_message, client_targets, decode_ack, needs_push, note_confirmation, push_message,
+    pushed_updated_at, RETRY,
+};
 use crate::store::{self, Store};
 
 pub fn main_for(kind: ProcessKind) -> ExitCode {
@@ -91,10 +95,10 @@ fn run(kind: ProcessKind) -> Result<(), String> {
             list.assignments().len(),
             list.updated_at()
         );
-        serve_fetches(&client, &push, &token, &dir, &mut list)?;
+        serve_record(&client, &push, &token, &dir, &mut list)?;
     }
     if kind == ProcessKind::Client {
-        request_list(&client, &token, &dir);
+        serve_client(&client, &push, &token, &dir)?;
     }
     std::thread::park();
     Ok(())
@@ -111,30 +115,77 @@ fn request_list(client: &NodeClient, token: &[u8; 16], dir: &crate::directory::D
     }
 }
 
-fn serve_fetches(
+fn serve_client(
     client: &NodeClient,
     push: &std::net::UdpSocket,
     token: &[u8; 16],
     dir: &crate::directory::Directory,
-    list: &mut Store,
 ) -> Result<(), String> {
-    let mut current = dir.clone();
+    request_list(client, token, dir);
     let mut buf = [0u8; 65535];
     loop {
         let n = match push.recv(&mut buf) {
             Ok(n) => n,
             Err(err) => return Err(format!("push socket: {err}")),
         };
+        let Some((_sender, payload)) = decode_push(&buf[..n]) else {
+            continue;
+        };
+        let Some(updated_at) = pushed_updated_at(payload) else {
+            continue;
+        };
+        let Some((device, app)) = record_server(dir) else {
+            continue;
+        };
+        if let Err(err) = client.send(token, &device, &app, &ack_message(updated_at)) {
+            eprintln!("could not confirm the address list: {err}");
+        } else {
+            println!("Confirmed address list {updated_at}.");
+        }
+    }
+}
+
+fn serve_record(
+    client: &NodeClient,
+    push: &std::net::UdpSocket,
+    token: &[u8; 16],
+    dir: &crate::directory::Directory,
+    list: &mut Store,
+) -> Result<(), String> {
+    push.set_read_timeout(Some(RETRY))
+        .map_err(|err| format!("push socket: {err}"))?;
+    let mut current = dir.clone();
+    let mut buf = [0u8; 65535];
+    loop {
         if let Ok(reply) = client.get_data(token) {
             if let Ok(fresh) = parse_get_data(&reply) {
                 current = fresh;
                 let _ = list.note_clients_from(&current);
             }
         }
+        let message = push_message(list.updated_at(), list.assignments());
+        for (device, app) in client_targets(&current) {
+            if !needs_push(list, &device) {
+                continue;
+            }
+            if let Err(err) = client.send(token, &device, &app, &message) {
+                eprintln!("could not push the address list: {err}");
+            }
+        }
+        let n = match push.recv(&mut buf) {
+            Ok(n) => n,
+            Err(err) if is_timeout(&err) => continue,
+            Err(err) => return Err(format!("push socket: {err}")),
+        };
         let Some((sender, payload)) = decode_push(&buf[..n]) else {
             continue;
         };
         let now = unix_ms();
+        if let Some(acked) = decode_ack(payload) {
+            note_confirmation(list, &current, &sender, acked, now)
+                .map_err(|err| format!("confirm: {err}"))?;
+            continue;
+        }
         let reply = answer_fetch(list, &current, &sender, now, payload)
             .map_err(|err| format!("answer fetch: {err}"))?;
         let Some(reply) = reply else {
@@ -153,6 +204,10 @@ fn serve_fetches(
             eprintln!("could not send the address list: {err}");
         }
     }
+}
+
+fn is_timeout(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::WouldBlock || err.kind() == std::io::ErrorKind::TimedOut
 }
 
 fn unix_ms() -> u64 {

@@ -17,7 +17,11 @@ pub fn fetch_request() -> Vec<u8> {
 }
 
 pub fn encode_list(updated_at: u64, rows: &[Assignment]) -> Vec<u8> {
-    let mut buf = vec![VERSION, LIST];
+    encode_typed(LIST, updated_at, rows)
+}
+
+pub(crate) fn encode_typed(kind: u8, updated_at: u64, rows: &[Assignment]) -> Vec<u8> {
+    let mut buf = vec![VERSION, kind];
     buf.extend_from_slice(&updated_at.to_be_bytes());
     let count = u16::try_from(rows.len()).unwrap_or(u16::MAX);
     buf.extend_from_slice(&count.to_be_bytes());
