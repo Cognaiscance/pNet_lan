@@ -1,0 +1,19 @@
+[package]
+name = "pnet-lan"
+version = "0.1.0"
+edition = "2021"
+description = "A private IP overlay over pNet. The client and the server register as different apps."
+
+[dependencies]
+
+[lib]
+name = "pnet_lan"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pnet-lan-client"
+path = "src/bin/pnet-lan-client.rs"
+
+[[bin]]
+name = "pnet-lan-server"
+path = "src/bin/pnet-lan-server.rs"
