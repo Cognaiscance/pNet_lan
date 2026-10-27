@@ -293,6 +293,16 @@ pub fn is_primary_server(device: &DeviceRecord) -> bool {
     device.grade == Grade::Server && device.sg_rank == PRIMARY_SG_RANK
 }
 
+/// The rank-1 server-grade node and its `pnet-lan-server` app, if that app is listed.
+pub fn record_server(dir: &Directory) -> Option<([u8; 16], [u8; 16])> {
+    let device = dir
+        .own_devices
+        .iter()
+        .find(|device| is_primary_server(device))?;
+    let app = device.apps.iter().find(|app| app.alias == SERVER_ALIAS)?;
+    Some((device.id, app.id))
+}
+
 pub fn choose_role(dir: &Directory, kind: ProcessKind) -> Result<Role, RoleError> {
     let local = dir
         .own_devices

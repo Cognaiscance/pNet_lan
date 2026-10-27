@@ -23,6 +23,7 @@ pub fn default_push_port(kind: ProcessKind) -> u16 {
 
 const OP_REGISTER: u8 = 0x00;
 const OP_GET_DATA: u8 = 0x02;
+const OP_SEND: u8 = 0x03;
 const STATUS_OK: u8 = 0x00;
 const STATUS_ERR: u8 = 0x01;
 
@@ -119,6 +120,32 @@ pub fn get_data_packet(token: &[u8; 16]) -> Vec<u8> {
     buf
 }
 
+/// Op 0x03. Success from the node is silent, so this is only the request.
+pub fn send_packet(
+    token: &[u8; 16],
+    dest_device: &[u8; 16],
+    dest_app: &[u8; 16],
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1 + 48 + payload.len());
+    buf.push(OP_SEND);
+    buf.extend_from_slice(token);
+    buf.extend_from_slice(dest_device);
+    buf.extend_from_slice(dest_app);
+    buf.extend_from_slice(payload);
+    buf
+}
+
+/// Op 0x04 push: sender app id, then the opaque payload.
+pub fn decode_push(datagram: &[u8]) -> Option<([u8; 16], &[u8])> {
+    if datagram.first() != Some(&0x04) || datagram.len() < 17 {
+        return None;
+    }
+    let mut sender = [0u8; 16];
+    sender.copy_from_slice(&datagram[1..17]);
+    Some((sender, &datagram[17..]))
+}
+
 fn push_str(buf: &mut Vec<u8>, text: &str) {
     buf.push(text.len() as u8);
     buf.extend_from_slice(text.as_bytes());
@@ -148,6 +175,28 @@ impl NodeClient {
 
     pub fn get_data(&self, token: &[u8; 16]) -> Result<Vec<u8>, NodeError> {
         self.round_trip(&get_data_packet(token), 3)
+    }
+
+    /// Send an app payload. A timeout means the node accepted it, because
+    /// success has no reply. An error reply is returned.
+    pub fn send(
+        &self,
+        token: &[u8; 16],
+        dest_device: &[u8; 16],
+        dest_app: &[u8; 16],
+        payload: &[u8],
+    ) -> Result<(), NodeError> {
+        self.socket
+            .send(&send_packet(token, dest_device, dest_app, payload))
+            .map_err(NodeError::Io)?;
+        self.socket
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .map_err(NodeError::Io)?;
+        let result = read_send_result(&self.socket);
+        self.socket
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .map_err(NodeError::Io)?;
+        result
     }
 
     fn round_trip(&self, packet: &[u8], attempts: u32) -> Result<Vec<u8>, NodeError> {
@@ -180,6 +229,23 @@ impl NodeClient {
             }
         }
         Err(last)
+    }
+}
+
+fn read_send_result(socket: &UdpSocket) -> Result<(), NodeError> {
+    let mut buf = [0u8; 64];
+    match socket.recv(&mut buf) {
+        Ok(0) => Err(NodeError::Unexpected),
+        Ok(n) => {
+            if n >= 1 && buf[0] == STATUS_ERR {
+                let code = if n >= 2 { Some(buf[1]) } else { None };
+                Err(NodeError::Rejected { code })
+            } else {
+                Err(NodeError::Unexpected)
+            }
+        }
+        Err(err) if is_timeout(&err) => Ok(()),
+        Err(err) => Err(NodeError::Io(err)),
     }
 }
 

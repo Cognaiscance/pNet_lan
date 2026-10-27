@@ -103,8 +103,7 @@ impl Store {
     /// Drop receipt rows for devices that no longer have the client.
     pub fn retain_clients(&mut self, devices: &[[u8; 16]]) -> Result<(), StoreError> {
         let before = self.receipts.len();
-        self.receipts
-            .retain(|row| devices.contains(&row.device));
+        self.receipts.retain(|row| devices.contains(&row.device));
         if self.receipts.len() != before {
             self.write()?;
         }

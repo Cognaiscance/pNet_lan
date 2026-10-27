@@ -28,3 +28,8 @@ overrides that directory. Each row is a device and an optional IPv4 address.
 The file stores one `updated_at` for the whole list, and a `received_at` for
 each of this user's devices that has the client installed. The client does
 not open the file.
+
+On startup the client sends `FETCH` to `pnet-lan-server` on the rank-1
+server-grade node. That server answers with the list and sets `received_at`.
+A contact's client gets no answer. A retry does not move `received_at`
+backward.

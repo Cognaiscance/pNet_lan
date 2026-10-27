@@ -5,6 +5,7 @@
 //! `application/pnet-lan`.
 
 mod directory;
+mod fetch;
 mod node_api;
 mod startup;
 mod store;

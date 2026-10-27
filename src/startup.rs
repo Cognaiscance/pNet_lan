@@ -8,9 +8,11 @@
 use std::net::SocketAddr;
 use std::process::ExitCode;
 
-use crate::directory::{choose_role, parse_get_data, role_summary, ProcessKind};
+use crate::directory::{choose_role, parse_get_data, record_server, role_summary, ProcessKind};
+use crate::fetch::{answer_fetch, fetch_request};
 use crate::node_api::{
-    default_push_port, load_token, save_token, token_path, NodeClient, DEFAULT_PNET_ADDR,
+    decode_push, default_push_port, load_token, save_token, token_path, NodeClient,
+    DEFAULT_PNET_ADDR,
 };
 use crate::store::{self, Store};
 
@@ -30,8 +32,9 @@ fn run(kind: ProcessKind) -> Result<(), String> {
     let push_port = push_port(kind)?;
     let token_path = token_path(kind);
 
-    let _push = std::net::UdpSocket::bind(("127.0.0.1", push_port))
+    let push = std::net::UdpSocket::bind(("127.0.0.1", push_port))
         .map_err(|err| format!("bind 127.0.0.1:{push_port}: {err}"))?;
+    let _ = push.local_addr();
     let client =
         NodeClient::connect(pnet_addr).map_err(|err| format!("connect to {pnet_addr}: {err}"))?;
 
@@ -88,9 +91,68 @@ fn run(kind: ProcessKind) -> Result<(), String> {
             list.assignments().len(),
             list.updated_at()
         );
+        serve_fetches(&client, &push, &token, &dir, &mut list)?;
+    }
+    if kind == ProcessKind::Client {
+        request_list(&client, &token, &dir);
     }
     std::thread::park();
     Ok(())
+}
+
+fn request_list(client: &NodeClient, token: &[u8; 16], dir: &crate::directory::Directory) {
+    let Some((device, app)) = record_server(dir) else {
+        println!("The rank-1 server is not running pnet-lan-server yet.");
+        return;
+    };
+    match client.send(token, &device, &app, &fetch_request()) {
+        Ok(()) => println!("Asked the server for the address list."),
+        Err(err) => println!("Could not ask for the address list: {err}"),
+    }
+}
+
+fn serve_fetches(
+    client: &NodeClient,
+    push: &std::net::UdpSocket,
+    token: &[u8; 16],
+    dir: &crate::directory::Directory,
+    list: &mut Store,
+) -> Result<(), String> {
+    let mut buf = [0u8; 65535];
+    loop {
+        let n = match push.recv(&mut buf) {
+            Ok(n) => n,
+            Err(err) => return Err(format!("push socket: {err}")),
+        };
+        let Some((sender, payload)) = decode_push(&buf[..n]) else {
+            continue;
+        };
+        let now = unix_ms();
+        let reply = answer_fetch(list, dir, &sender, now, payload)
+            .map_err(|err| format!("answer fetch: {err}"))?;
+        let Some(reply) = reply else {
+            continue;
+        };
+        let Some(device) = dir.own_devices.iter().find_map(|device| {
+            device
+                .apps
+                .iter()
+                .any(|app| app.id == sender)
+                .then_some(device.id)
+        }) else {
+            continue;
+        };
+        if let Err(err) = client.send(token, &device, &sender, &reply) {
+            eprintln!("could not send the address list: {err}");
+        }
+    }
+}
+
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn pnet_addr() -> Result<SocketAddr, String> {
