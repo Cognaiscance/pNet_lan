@@ -22,3 +22,9 @@ token: `~/.pnet/pnet-lan-client/token` and `~/.pnet/pnet-lan-server/token`.
 The client prints `client`. The server prints `record` when this node is the
 rank-1 server-grade node, and `standby` on every other node. A standby does
 not open a store. There is no page and no TUN interface yet.
+
+The record role creates or reopens `~/.pnet/pnet-lan/list`. `PNET_LAN_DIR`
+overrides that directory. Each row is a device and an optional IPv4 address.
+The file stores one `updated_at` for the whole list, and a `received_at` for
+each of this user's devices that has the client installed. The client does
+not open the file.

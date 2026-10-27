@@ -49,8 +49,7 @@ impl Role {
         }
     }
 
-    /// The address list is opened only by the record role. Step 1 has no store
-    /// yet, so a standby never reaches one.
+    /// The address list is opened only by the record role.
     pub fn opens_store(self) -> bool {
         matches!(self, Role::Record)
     }
@@ -315,7 +314,7 @@ pub fn choose_role(dir: &Directory, kind: ProcessKind) -> Result<Role, RoleError
 pub fn role_summary(role: Role) -> &'static str {
     match role {
         Role::Client => "This client forwards packets. No interface is open yet.",
-        Role::Record => "This server holds the address list. The list is not stored yet.",
+        Role::Record => "This server holds the address list.",
         Role::Standby => "This server is standing by and will not open a store.",
     }
 }

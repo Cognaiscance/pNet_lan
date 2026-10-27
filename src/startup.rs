@@ -12,6 +12,7 @@ use crate::directory::{choose_role, parse_get_data, role_summary, ProcessKind};
 use crate::node_api::{
     default_push_port, load_token, save_token, token_path, NodeClient, DEFAULT_PNET_ADDR,
 };
+use crate::store::{self, Store};
 
 pub fn main_for(kind: ProcessKind) -> ExitCode {
     match run(kind) {
@@ -77,7 +78,16 @@ fn run(kind: ProcessKind) -> Result<(), String> {
     println!("Push port {push_port}. Stop with Ctrl-C.");
     let _ = std::io::Write::flush(&mut std::io::stdout());
     if role.opens_store() {
-        println!("No address list is open yet.");
+        let path = store::record_dir();
+        let mut list = Store::open(&path).map_err(|err| format!("open address list: {err}"))?;
+        list.note_clients_from(&dir)
+            .map_err(|err| format!("note clients: {err}"))?;
+        println!(
+            "Address list {} ({} devices, updated_at {}).",
+            path.display(),
+            list.assignments().len(),
+            list.updated_at()
+        );
     }
     std::thread::park();
     Ok(())

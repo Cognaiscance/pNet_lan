@@ -7,6 +7,7 @@
 mod directory;
 mod node_api;
 mod startup;
+mod store;
 
 pub use directory::ProcessKind;
 pub use startup::main_for;
