@@ -118,22 +118,29 @@ fn serve_fetches(
     dir: &crate::directory::Directory,
     list: &mut Store,
 ) -> Result<(), String> {
+    let mut current = dir.clone();
     let mut buf = [0u8; 65535];
     loop {
         let n = match push.recv(&mut buf) {
             Ok(n) => n,
             Err(err) => return Err(format!("push socket: {err}")),
         };
+        if let Ok(reply) = client.get_data(token) {
+            if let Ok(fresh) = parse_get_data(&reply) {
+                current = fresh;
+                let _ = list.note_clients_from(&current);
+            }
+        }
         let Some((sender, payload)) = decode_push(&buf[..n]) else {
             continue;
         };
         let now = unix_ms();
-        let reply = answer_fetch(list, dir, &sender, now, payload)
+        let reply = answer_fetch(list, &current, &sender, now, payload)
             .map_err(|err| format!("answer fetch: {err}"))?;
         let Some(reply) = reply else {
             continue;
         };
-        let Some(device) = dir.own_devices.iter().find_map(|device| {
+        let Some(device) = current.own_devices.iter().find_map(|device| {
             device
                 .apps
                 .iter()
