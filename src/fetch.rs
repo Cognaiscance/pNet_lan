@@ -1,12 +1,12 @@
 //! A client asks for the address list. The server answers only this user's clients.
 //!
 //! The request is version 1, type `FETCH` (`0x01`). The reply is version 1,
-//! type `LIST` (`0x02`), then `updated_at` and each device's optional IPv4
-//! address. A later fetch with an earlier time does not move `received_at`
+//! type `LIST` (`0x02`), then `updated_at` and each device's optional IPv4 or
+//! IPv6 address. A later fetch with an earlier time does not move `received_at`
 //! backward.
 
 use crate::directory::{Directory, CLIENT_ALIAS};
-use crate::store::{Assignment, Store, StoreError};
+use crate::store::{push_address, take_address, Assignment, Store, StoreError};
 
 pub const VERSION: u8 = 1;
 pub const FETCH: u8 = 0x01;
@@ -23,13 +23,7 @@ pub fn encode_list(updated_at: u64, rows: &[Assignment]) -> Vec<u8> {
     buf.extend_from_slice(&count.to_be_bytes());
     for row in rows.iter().take(count as usize) {
         buf.extend_from_slice(&row.device);
-        match row.address {
-            None => buf.push(0),
-            Some(addr) => {
-                buf.push(4);
-                buf.extend_from_slice(&addr.octets());
-            }
-        }
+        push_address(&mut buf, row.address);
     }
     buf
 }
@@ -48,17 +42,7 @@ pub fn decode_list(payload: &[u8]) -> Option<(u64, Vec<Assignment>)> {
     for _ in 0..count {
         let device: [u8; 16] = payload.get(pos..pos + 16)?.try_into().ok()?;
         pos += 16;
-        let kind = *payload.get(pos)?;
-        pos += 1;
-        let address = match kind {
-            0 => None,
-            4 => {
-                let octets: [u8; 4] = payload.get(pos..pos + 4)?.try_into().ok()?;
-                pos += 4;
-                Some(std::net::Ipv4Addr::from(octets))
-            }
-            _ => return None,
-        };
+        let address = take_address(payload, &mut pos).ok()?;
         rows.push(Assignment { device, address });
     }
     if pos != payload.len() {
@@ -110,7 +94,7 @@ mod tests {
     use super::*;
     use crate::directory::{AppRecord, ContactRecord, DeviceRecord, Grade};
     use crate::store::Receipt;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr};
 
     fn app(id: u8, alias: &str) -> AppRecord {
         AppRecord {
@@ -154,16 +138,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let mut store = Store::open(&dir).unwrap();
         let laptop = [3u8; 16];
+        let v6 = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
         store
-            .assign(laptop, Some(Ipv4Addr::new(10, 0, 0, 2)), 10)
+            .assign(laptop, Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))), 10)
             .unwrap();
+        store.assign([9; 16], Some(v6), 11).unwrap();
         let directory = directory();
         let reply = answer_fetch(&mut store, &directory, &[8; 16], 40, &fetch_request())
             .unwrap()
             .unwrap();
         let (updated, rows) = decode_list(&reply).unwrap();
-        assert_eq!(updated, 10);
-        assert_eq!(rows[0].address, Some(Ipv4Addr::new(10, 0, 0, 2)));
+        assert_eq!(updated, 11);
+        assert_eq!(
+            rows[0].address,
+            Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)))
+        );
+        assert_eq!(rows[1].address, Some(v6));
         assert_eq!(
             store.receipts(),
             &[Receipt {

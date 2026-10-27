@@ -1,13 +1,13 @@
 //! Address list for the server that holds it.
 //!
 //! The directory is `~/.pnet/pnet-lan/`. This file is `list`. Only the record
-//! role opens it. An address is an optional IPv4 label for one device. The
+//! role opens it. An address is an optional IPv4 or IPv6 label for one device. The
 //! list has one `updated_at`. Each of this user's devices that has the client
 //! installed has its own `received_at`.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::net::Ipv4Addr;
+use std::net::IpAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -18,7 +18,7 @@ const MAGIC: &[u8; 4] = b"LAN1";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Assignment {
     pub device: [u8; 16],
-    pub address: Option<Ipv4Addr>,
+    pub address: Option<IpAddr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,7 +128,7 @@ impl Store {
     pub fn assign(
         &mut self,
         device: [u8; 16],
-        address: Option<Ipv4Addr>,
+        address: Option<IpAddr>,
         now_ms: u64,
     ) -> Result<(), StoreError> {
         if let Some(row) = self.assignments.iter_mut().find(|row| row.device == device) {
@@ -179,13 +179,7 @@ fn encode(updated_at: u64, assignments: &[Assignment], receipts: &[Receipt]) -> 
     buf.extend_from_slice(&(assignments.len() as u32).to_be_bytes());
     for row in assignments {
         buf.extend_from_slice(&row.device);
-        match row.address {
-            None => buf.push(0),
-            Some(addr) => {
-                buf.push(4);
-                buf.extend_from_slice(&addr.octets());
-            }
-        }
+        push_address(&mut buf, row.address);
     }
     buf.extend_from_slice(&(receipts.len() as u32).to_be_bytes());
     for row in receipts {
@@ -211,15 +205,8 @@ fn decode(bytes: &[u8]) -> Result<(u64, Vec<Assignment>, Vec<Receipt>), StoreErr
     let mut assignments = Vec::with_capacity(count);
     for _ in 0..count {
         let device = read_id(bytes, &mut pos)?;
-        let kind = read_u8(bytes, &mut pos)?;
-        let address = match kind {
-            0 => None,
-            4 => {
-                let octets = read_n::<4>(bytes, &mut pos)?;
-                Some(Ipv4Addr::from(octets))
-            }
-            _ => return Err(StoreError::Corrupt("bad address")),
-        };
+        let address =
+            take_address(bytes, &mut pos).map_err(|_| StoreError::Corrupt("bad address"))?;
         assignments.push(Assignment { device, address });
     }
     let count = read_u32(bytes, &mut pos)? as usize;
@@ -241,6 +228,42 @@ fn decode(bytes: &[u8]) -> Result<(u64, Vec<Assignment>, Vec<Receipt>), StoreErr
         return Err(StoreError::Corrupt("trailing bytes"));
     }
     Ok((updated_at, assignments, receipts))
+}
+
+/// `0` is no address, `4` is IPv4, `16` is IPv6.
+pub fn push_address(buf: &mut Vec<u8>, address: Option<IpAddr>) {
+    match address {
+        None => buf.push(0),
+        Some(IpAddr::V4(addr)) => {
+            buf.push(4);
+            buf.extend_from_slice(&addr.octets());
+        }
+        Some(IpAddr::V6(addr)) => {
+            buf.push(16);
+            buf.extend_from_slice(&addr.octets());
+        }
+    }
+}
+
+pub fn take_address(bytes: &[u8], pos: &mut usize) -> Result<Option<IpAddr>, ()> {
+    let kind = *bytes.get(*pos).ok_or(())?;
+    *pos += 1;
+    match kind {
+        0 => Ok(None),
+        4 => {
+            let end = pos.checked_add(4).ok_or(())?;
+            let octets: [u8; 4] = bytes.get(*pos..end).ok_or(())?.try_into().map_err(|_| ())?;
+            *pos = end;
+            Ok(Some(IpAddr::V4(octets.into())))
+        }
+        16 => {
+            let end = pos.checked_add(16).ok_or(())?;
+            let octets: [u8; 16] = bytes.get(*pos..end).ok_or(())?.try_into().map_err(|_| ())?;
+            *pos = end;
+            Ok(Some(IpAddr::V6(octets.into())))
+        }
+        _ => Err(()),
+    }
 }
 
 fn read_u8(bytes: &[u8], pos: &mut usize) -> Result<u8, StoreError> {
@@ -291,6 +314,7 @@ pub fn record_dir() -> PathBuf {
 mod tests {
     use super::*;
     use crate::directory::{AppRecord, DeviceRecord, Directory, Grade};
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -324,14 +348,15 @@ mod tests {
         let dir = temp_dir();
         let own = [1u8; 16];
         let contact = [2u8; 16];
+        let v6 = IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2));
         let mut store = Store::open(&dir).unwrap();
         store
-            .assign(own, Some(Ipv4Addr::new(10, 0, 0, 2)), 100)
+            .assign(own, Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))), 100)
             .unwrap();
-        store.assign(contact, None, 200).unwrap();
+        store.assign(contact, Some(v6), 200).unwrap();
         assert_eq!(store.updated_at(), 200);
         store
-            .assign(own, Some(Ipv4Addr::new(10, 0, 0, 2)), 300)
+            .assign(own, Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))), 300)
             .unwrap();
         assert_eq!(store.updated_at(), 200);
         drop(store);
@@ -342,11 +367,11 @@ mod tests {
             &[
                 Assignment {
                     device: own,
-                    address: Some(Ipv4Addr::new(10, 0, 0, 2)),
+                    address: Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))),
                 },
                 Assignment {
                     device: contact,
-                    address: None,
+                    address: Some(v6),
                 },
             ]
         );
