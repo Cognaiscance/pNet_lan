@@ -6,6 +6,7 @@
 
 mod directory;
 mod fetch;
+mod forward;
 mod node_api;
 mod page;
 mod push;

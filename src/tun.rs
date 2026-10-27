@@ -2,7 +2,7 @@
 //!
 //! The interface claims only the address assigned to this device. Every other
 //! assigned address is a host route through the interface. An empty assignment
-//! leaves the interface with nothing to claim. Packets are not forwarded yet.
+//! leaves the interface with nothing to claim.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -134,6 +134,30 @@ impl Tun {
     pub fn fd(&self) -> i32 {
         self.file.as_raw_fd()
     }
+
+    pub fn read_packet(&self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = unsafe { read(self.fd(), buf.as_mut_ptr(), buf.len()) };
+        if n < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(n as usize)
+        }
+    }
+
+    pub fn write_packet(&self, packet: &[u8]) -> io::Result<()> {
+        let mut sent = 0;
+        while sent < packet.len() {
+            let n = unsafe { write(self.fd(), packet[sent..].as_ptr(), packet.len() - sent) };
+            if n < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if n == 0 {
+                return Err(io::Error::new(io::ErrorKind::WriteZero, "tun write"));
+            }
+            sent += n as usize;
+        }
+        Ok(())
+    }
 }
 
 /// Apply the claim with `ip`. A failed command returns its status text.
@@ -176,6 +200,8 @@ pub fn describe(claim: &Claim) -> String {
 
 unsafe extern "C" {
     fn ioctl(fd: i32, request: u64, arg: *mut u8) -> i32;
+    fn read(fd: i32, buf: *mut u8, count: usize) -> isize;
+    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
 }
 
 #[cfg(test)]

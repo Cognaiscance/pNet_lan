@@ -22,9 +22,9 @@ token: `~/.pnet/pnet-lan-client/token` and `~/.pnet/pnet-lan-server/token`.
 The client prints `client` and opens a TUN interface named `pnetlan`. It claims
 only the address assigned to this device. The other addresses in the list are
 host routes through that interface. An empty assignment leaves the interface
-with nothing to claim. No packet is forwarded yet. The server prints `record` when this node is the
+with nothing to claim. The server prints `record` when this node is the
 rank-1 server-grade node, and `standby` on every other node. A standby does
-not open a store. There is no TUN interface yet.
+not open a store.
 
 The record role serves `http://127.0.0.1:8794/`. `PNET_LAN_HTTP_PORT` overrides
 that port. The page lists this user's devices, then each contact's devices.
@@ -41,6 +41,13 @@ On startup the client sends `FETCH` to `pnet-lan-server` on the rank-1
 server-grade node. That server answers with the list and sets `received_at`.
 A contact's client gets no answer. A retry does not move `received_at`
 backward.
+
+A TCP or UDP packet sent to an address in the list is stripped of its
+addresses and sent through pNet to the device that address names. The
+receiving client writes its own addresses: the source is the address it
+assigned to the sender, and the destination is the address it assigned to
+itself. If this list has no address for the other device, the packet is
+dropped. Other protocols are not forwarded.
 
 Saving on the page changes the list. When the list changes, the server pushes it to each of this user's devices
 that has the client installed. It sends that push again every second until

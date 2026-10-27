@@ -4,7 +4,7 @@
 //! server registers as `pnet-lan-server`. It is the record on the rank-1
 //! server-grade node and stands by on every other node. A standby does not
 //! open a store. The record role serves the address page. The client opens a
-//! TUN interface and does not forward packets yet.
+//! TUN interface and forwards TCP and UDP through pNet.
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::directory::{choose_role, parse_get_data, record_server, role_summary, ProcessKind};
 use crate::fetch::{answer_fetch, decode_assignment, fetch_request};
+use crate::forward::{self, client_app, device_of_client, prepare_inbound, prepare_outbound};
 use crate::node_api::{
     decode_push, default_push_port, load_token, save_token, token_path, NodeClient,
     DEFAULT_PNET_ADDR,
@@ -115,7 +116,7 @@ fn run(kind: ProcessKind) -> Result<(), String> {
         serve_record(&client, &push, &token, &list, &shared_dir)?;
     }
     if kind == ProcessKind::Client {
-        serve_client(&client, &push, &token, &dir)?;
+        serve_client(client, &push, &token, &dir)?;
     }
     std::thread::park();
     Ok(())
@@ -133,32 +134,64 @@ fn request_list(client: &NodeClient, token: &[u8; 16], dir: &crate::directory::D
 }
 
 fn serve_client(
-    client: &NodeClient,
+    client: NodeClient,
     push: &std::net::UdpSocket,
     token: &[u8; 16],
     dir: &crate::directory::Directory,
 ) -> Result<(), String> {
-    let interface = tun::Tun::open("pnetlan").map_err(|err| format!("open tun pnetlan: {err}"))?;
-    println!(
-        "TUN {} is open (fd {}). No packets are forwarded yet.",
-        interface.name,
-        interface.fd()
-    );
-    request_list(client, token, dir);
+    let interface =
+        Arc::new(tun::Tun::open("pnetlan").map_err(|err| format!("open tun pnetlan: {err}"))?);
+    println!("TUN {} is open (fd {}).", interface.name, interface.fd());
+    let client = Arc::new(client);
+    let rows = Arc::new(Mutex::new(Vec::new()));
+    let directory = Arc::new(Mutex::new(dir.clone()));
+    let local_device = dir.local_device;
+    let reader = Arc::clone(&interface);
+    let sender = Arc::clone(&client);
+    let outbound_rows = Arc::clone(&rows);
+    let outbound_dir = Arc::clone(&directory);
+    let outbound_token = *token;
+    std::thread::spawn(move || {
+        forward_outbound(
+            reader,
+            sender,
+            outbound_rows,
+            outbound_dir,
+            local_device,
+            outbound_token,
+        );
+    });
+    request_list(&client, token, dir);
     let mut buf = [0u8; 65535];
     loop {
         let n = match push.recv(&mut buf) {
             Ok(n) => n,
             Err(err) => return Err(format!("push socket: {err}")),
         };
-        let Some((_sender, payload)) = decode_push(&buf[..n]) else {
+        let Some((sender, payload)) = decode_push(&buf[..n]) else {
             continue;
         };
-        if let Some((_updated_at, rows)) = decode_assignment(payload) {
-            let claim = claim_for(&dir.local_device, &rows);
+        refresh_directory(&client, token, &directory);
+        let current = directory.lock().map_err(|_| "directory lock".to_string())?;
+        let mut saved = rows.lock().map_err(|_| "address list lock".to_string())?;
+        if forward::unwrap_packet(payload).is_some() {
+            if let Some(device) = device_of_client(&current, &sender) {
+                if let Some(rewritten) = prepare_inbound(payload, &local_device, &device, &saved) {
+                    if let Err(err) = interface.write_packet(&rewritten) {
+                        eprintln!("could not write the packet: {err}");
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some((_updated_at, list)) = decode_assignment(payload) {
+            let claim = claim_for(&dir.local_device, &list);
             tun::apply(&interface.name, &claim)?;
+            *saved = list;
             println!("{}", tun::describe(&claim));
         }
+        drop(saved);
+        drop(current);
         let Some(updated_at) = pushed_updated_at(payload) else {
             continue;
         };
@@ -169,6 +202,59 @@ fn serve_client(
             eprintln!("could not confirm the address list: {err}");
         } else {
             println!("Confirmed address list {updated_at}.");
+        }
+    }
+}
+
+fn forward_outbound(
+    interface: Arc<tun::Tun>,
+    client: Arc<NodeClient>,
+    rows: Arc<Mutex<Vec<crate::store::Assignment>>>,
+    dir: Arc<Mutex<crate::directory::Directory>>,
+    local_device: [u8; 16],
+    token: [u8; 16],
+) {
+    let mut buf = [0u8; 4094];
+    loop {
+        let n = match interface.read_packet(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => n,
+            Err(err) => {
+                eprintln!("tun read: {err}");
+                return;
+            }
+        };
+        let (directory, saved) = {
+            let Ok(directory) = dir.lock() else {
+                continue;
+            };
+            let Ok(saved) = rows.lock() else {
+                continue;
+            };
+            (directory.clone(), saved.clone())
+        };
+        let Some((device, payload)) = prepare_outbound(&buf[..n], &local_device, &saved) else {
+            continue;
+        };
+        let Some(app) = client_app(&directory, &device) else {
+            continue;
+        };
+        if let Err(err) = client.send(&token, &device, &app, &payload) {
+            eprintln!("could not forward the packet: {err}");
+        }
+    }
+}
+
+fn refresh_directory(
+    client: &NodeClient,
+    token: &[u8; 16],
+    dir: &Mutex<crate::directory::Directory>,
+) {
+    if let Ok(reply) = client.get_data(token) {
+        if let Ok(fresh) = parse_get_data(&reply) {
+            if let Ok(mut current) = dir.lock() {
+                *current = fresh;
+            }
         }
     }
 }
