@@ -15,6 +15,95 @@ use crate::store::{Store, StoreError};
 
 pub const DEFAULT_HTTP_PORT: u16 = 8794;
 
+pub const PORTAL_SLUG: &str = "lan";
+pub const PORTAL_TITLE: &str = "pNet LAN";
+
+pub fn portal_base() -> String {
+    match std::env::var("PNET_PORTAL") {
+        Ok(value) if !value.is_empty() => value.trim_end_matches('/').to_string(),
+        _ => "http://127.0.0.1:8777".to_string(),
+    }
+}
+
+/// Register this page on the local portal. The same slug replaces an older mount.
+pub fn register_portal(port: u16) -> Result<String, String> {
+    let body = format!(
+        "slug={PORTAL_SLUG}&port={port}&title={}",
+        form_encode(PORTAL_TITLE)
+    );
+    let reply = post_portal("/api/app-web/register", &body)?;
+    if !reply.starts_with("ok ") {
+        return Err(reply);
+    }
+    Ok(format!(
+        "Portal mount /apps/{PORTAL_SLUG}/ on {}",
+        portal_base()
+    ))
+}
+
+fn post_portal(path: &str, body: &str) -> Result<String, String> {
+    let base = portal_base();
+    let rest = base
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("PNET_PORTAL '{base}' must be http"))?;
+    let (host, port) = rest
+        .rsplit_once(':')
+        .ok_or_else(|| format!("PNET_PORTAL '{base}' has no port"))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("PNET_PORTAL '{base}' has a bad port"))?;
+    let mut last = "portal did not answer".to_string();
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        match post_once(host, port, path, body) {
+            Ok(reply) => return Ok(reply),
+            Err(err) => last = err,
+        }
+    }
+    Err(last)
+}
+
+fn post_once(host: &str, port: u16, path: &str, body: &str) -> Result<String, String> {
+    let mut stream =
+        TcpStream::connect((host, port)).map_err(|err| format!("connect {host}:{port}: {err}"))?;
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| format!("portal write: {err}"))?;
+    let mut buf = String::new();
+    stream
+        .read_to_string(&mut buf)
+        .map_err(|err| format!("portal read: {err}"))?;
+    let Some((head, rest)) = buf.split_once("\r\n\r\n") else {
+        return Err("portal reply had no header".to_string());
+    };
+    let status = head.lines().next().unwrap_or("");
+    let code = status.split_whitespace().nth(1).unwrap_or("");
+    if code != "200" {
+        return Err(format!("portal {code}: {}", rest.trim()));
+    }
+    Ok(rest.trim().to_string())
+}
+
+fn form_encode(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => out.push(byte as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 pub fn http_port() -> Result<u16, String> {
     let text = match std::env::var("PNET_LAN_HTTP_PORT") {
         Ok(value) if !value.is_empty() => value,
@@ -82,7 +171,9 @@ pub fn render(updated_at: u64, listed: &[Row], error: Option<&str>) -> String {
         body.push_str(&escape(error));
         body.push_str("</p>");
     }
-    body.push_str("<form method=\"post\" action=\"/\">");
+    // An empty action posts back to this page, including when the portal
+    // serves it under /apps/lan/.
+    body.push_str("<form method=\"post\" action=\"\">");
     let mut heading = None;
     for row in listed {
         if heading.as_deref() != Some(row.heading.as_str()) {
@@ -396,6 +487,7 @@ mod tests {
         let phone = html.find("phone").unwrap();
         assert!(own < laptop && laptop < chad && chad < phone);
         assert!(html.contains("10.0.0.2"));
+        assert!(html.contains("action=\"\""));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

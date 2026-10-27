@@ -106,6 +106,10 @@ fn run(kind: ProcessKind) -> Result<(), String> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", http_port))
             .map_err(|err| format!("bind 127.0.0.1:{http_port}: {err}"))?;
         println!("Address page http://127.0.0.1:{http_port}/");
+        match page::register_portal(http_port) {
+            Ok(line) => println!("{line}"),
+            Err(err) => eprintln!("portal mount: {err}"),
+        }
         let page_list = Arc::clone(&list);
         let page_dir = Arc::clone(&shared_dir);
         std::thread::spawn(move || {

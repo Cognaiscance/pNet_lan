@@ -27,7 +27,9 @@ rank-1 server-grade node, and `standby` on every other node. A standby does
 not open a store.
 
 The record role serves `http://127.0.0.1:8794/`. `PNET_LAN_HTTP_PORT` overrides
-that port. The page lists this user's devices, then each contact's devices.
+that port. It registers that page on the local portal as `/apps/lan/`, titled
+`pNet LAN`. `PNET_PORTAL` defaults to `http://127.0.0.1:8777`. The page lists
+this user's devices, then each contact's devices.
 Saving an address or clearing one writes the list, bumps `updated_at`, and
 the push sends that list. A value that is not an IP address is left unsaved.
 
